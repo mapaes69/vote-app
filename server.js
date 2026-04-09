@@ -32,6 +32,7 @@ app.use(helmet({
 app.use(cors({
   origin: [
     "https://encuestaperu2026.com",
+    "https://vote-app-hugt.onrender.com",
     "http://localhost:3001"
   ]
 }));
