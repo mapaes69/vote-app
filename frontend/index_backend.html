@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Votación Perú REAL</title>
+</head>
+
+<body style="font-family:sans-serif;padding:20px;background:#f5f5f5;">
+
+<h2>🗳️ ¿Quién debería ser presidente?</h2>
+<h3 id="total"></h3>
+
+<div id="options"></div>
+<div id="results" style="margin-top:20px;"></div>
+
+<script>
+
+const BACKEND = "http://192.168.1.10:3001"; // ⚠️ cambia si tu IP es otra
+
+// 🔥 MISMO ORDEN EXACTO
+const candidates = [
+  {id:4,name:"Keiko Fujimori", img:"img/Keiko.jpg"},
+  {id:1,name:"Rafael López Aliaga", img:"img/Aliaga.jpg"},
+  {id:2,name:"Carlos Álvarez", img:"img/alvarez.jpg"},
+  {id:3,name:"Ricardo Belmont", img:"img/belmont.jpg"},
+  {id:9,name:"Enrrique Valderrama", img:"img/valderrama.jpg"},
+  {id:5,name:"Alfonso López Chau", img:"img/lopez.jpg"},
+  {id:6,name:"Jorge Nieto", img:"img/nieto.jpg"},
+  {id:7,name:"Roberto Sanchez", img:"img/sanchez.jpg"},
+  {id:8,name:"Maria perez Tello", img:"img/tello.jpg"}
+];
+
+// 🔒 solo visual
+let voted = localStorage.getItem("voted");
+
+const optionsDiv = document.getElementById("options");
+
+// 🔥 BOTONES
+candidates.forEach(c=>{
+  const btn=document.createElement("button");
+
+  btn.innerHTML = `
+    <div style="display:flex;align-items:center;gap:15px;">
+      <img src="${c.img}"
+           style="width:70px;height:70px;border-radius:50%;object-fit:cover;">
+      <strong>${c.name}</strong>
+    </div>
+  `;
+
+  btn.style.display="block";
+  btn.style.width="100%";
+  btn.style.padding="15px";
+  btn.style.margin="10px 0";
+  btn.style.border="1px solid #ddd";
+  btn.style.borderRadius="10px";
+  btn.style.background="#fff";
+
+  btn.onclick=async ()=>{
+    if(voted){
+      alert("⚠️ Ya votaste");
+      return;
+    }
+
+    try {
+      const res = await fetch(BACKEND + "/vote", {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({
+          option_id: c.id,
+          poll_id: 1
+        })
+      });
+
+      const data = await res.json();
+
+      if(data.error){
+        alert(data.error);
+        return;
+      }
+
+      localStorage.setItem("voted", true);
+      voted = true;
+
+      loadResults();
+
+    } catch (e) {
+      alert("Error conectando al servidor");
+    }
+  };
+
+  optionsDiv.appendChild(btn);
+});
+
+// 🔥 RESULTADOS REALES
+async function loadResults(){
+
+  let data;
+
+  try {
+    const res = await fetch(BACKEND + "/results/1");
+    data = await res.json();
+  } catch (e) {
+    console.log("Error backend");
+    return;
+  }
+
+  const votes = {};
+  let total = data.total || 0;
+
+  data.results.forEach(r=>{
+    votes[r.option_id] = parseInt(r.votes);
+  });
+
+  document.getElementById("total").innerText =
+    "🔥 Total votos: " + total;
+
+  const resultsDiv=document.getElementById("results");
+  resultsDiv.innerHTML="";
+
+  candidates.forEach(c=>{
+    const v = votes[c.id] || 0;
+    const percent = total > 0 ? ((v/total)*100).toFixed(1) : 0;
+
+    const div=document.createElement("div");
+
+    div.innerHTML=`
+      <div style="margin-top:10px;">
+        <strong>${c.name}</strong> — ${v} votos (${percent}%)
+      </div>
+      <div style="background:#ddd;height:20px;border-radius:10px;">
+        <div style="background:#4CAF50;width:${percent}%;height:20px;border-radius:10px;"></div>
+      </div>
+    `;
+
+    resultsDiv.appendChild(div);
+  });
+}
+
+// 🔄 TIEMPO REAL
+setInterval(loadResults, 2000);
+
+// 🔥 INICIAL
+loadResults();
+
+</script>
+
+</body>
+</html>
