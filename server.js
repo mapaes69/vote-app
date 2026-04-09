@@ -3,15 +3,22 @@ const cors = require("cors");
 const helmet = require("helmet");
 const crypto = require("crypto");
 const path = require("path");
+const fs = require("fs");
 const fetch = (...args)=>import('node-fetch').then(({default:fetch})=>fetch(...args));
 
 const Redis = require("ioredis");
 const pool = require("./db");
 
-const redis = new Redis(process.env.REDIS_URL, {
-  maxRetriesPerRequest: 3,
-  tls: {}
-});
+// 🔥 REDIS PROTEGIDO
+let redis;
+try{
+  redis = new Redis(process.env.REDIS_URL, {
+    maxRetriesPerRequest: 3,
+    tls: {}
+  });
+}catch(e){
+  console.error("Redis init error");
+}
 
 const app = express();
 
@@ -31,19 +38,36 @@ app.use(cors({
 
 app.use(express.json());
 
+// ================= FRONTEND SAFE =================
 const frontendPath = path.join(__dirname, "../frontend");
 app.use(express.static(frontendPath));
 
 app.get("/", (req, res) => {
-  res.sendFile(path.join(frontendPath, "index.html"));
+  const indexPath = path.join(frontendPath, "index.html");
+
+  if (fs.existsSync(indexPath)) {
+    return res.sendFile(indexPath);
+  }
+
+  return res.send("🔥 Backend activo - API funcionando");
 });
 
+// ================= CONFIG =================
 const TURNSTILE_SECRET = process.env.TURNSTILE_SECRET;
 const SECRET_SALT = process.env.SECRET_SALT || "fallback_seguro";
 const IPQS_KEY = process.env.IPQS_KEY;
 
+if(!TURNSTILE_SECRET){
+  console.error("❌ FALTA TURNSTILE_SECRET");
+}
+
+if(!process.env.REDIS_URL){
+  console.error("❌ FALTA REDIS_URL");
+}
+
 const VALID_OPTIONS = [1,2,3,4,5,6,7,8,9];
 
+// ================= HELPERS =================
 function getIP(req){
   let ip = (req.headers["x-forwarded-for"] || "").split(",")[0].trim()
     || req.socket.remoteAddress || "unknown";
@@ -80,13 +104,12 @@ async function verifyCaptcha(captcha, ip){
   }
 }
 
-// 🔥 CACHE IP CHECK (CRÍTICO)
+// 🔥 CACHE IP CHECK
 async function checkIP(ip){
-
   try{
 
     const cacheKey = `ipcheck:${ip}`;
-    const cached = await redis.get(cacheKey);
+    const cached = await redis?.get(cacheKey);
 
     if(cached){
       return cached === "1";
@@ -104,7 +127,7 @@ async function checkIP(ip){
     if(data.proxy || data.vpn || data.tor) ipOk = false;
     if(data.fraud_score > 85) ipOk = false;
 
-    await redis.set(cacheKey, ipOk ? "1" : "0", "EX", 300);
+    await redis?.set(cacheKey, ipOk ? "1" : "0", "EX", 300);
 
     return ipOk;
 
@@ -114,33 +137,38 @@ async function checkIP(ip){
 }
 
 async function rateLimit(ip, fingerprint){
+  try{
 
-  const ipKey = `rate_ip:${ip}`;
-  const devKey = `rate_dev:${fingerprint}`;
-  const comboKey = `combo:${fingerprint}:${ip}`;
+    const ipKey = `rate_ip:${ip}`;
+    const devKey = `rate_dev:${fingerprint}`;
+    const comboKey = `combo:${fingerprint}:${ip}`;
 
-  const pipeline = redis.pipeline();
+    const pipeline = redis.pipeline();
 
-  pipeline.incr(ipKey);
-  pipeline.incr(devKey);
-  pipeline.incr(comboKey);
+    pipeline.incr(ipKey);
+    pipeline.incr(devKey);
+    pipeline.incr(comboKey);
 
-  const result = await pipeline.exec();
+    const result = await pipeline.exec();
 
-  const ipCount = result[0][1];
-  const devCount = result[1][1];
-  const combo = result[2][1];
+    const ipCount = result[0][1];
+    const devCount = result[1][1];
+    const combo = result[2][1];
 
-  if(ipCount === 1) await redis.expire(ipKey, 60);
-  if(devCount === 1) await redis.expire(devKey, 60);
-  if(combo === 1) await redis.expire(comboKey, 60);
+    if(ipCount === 1) await redis.expire(ipKey, 60);
+    if(devCount === 1) await redis.expire(devKey, 60);
+    if(combo === 1) await redis.expire(comboKey, 60);
 
-  if(ipCount > 25 || devCount > 10){
-    throw new Error("RATE_LIMIT");
-  }
+    if(ipCount > 25 || devCount > 10){
+      throw new Error("RATE_LIMIT");
+    }
 
-  if(combo > 5){
-    throw new Error("BOT_DETECTED");
+    if(combo > 5){
+      throw new Error("BOT_DETECTED");
+    }
+
+  }catch(e){
+    console.error("Rate limit error");
   }
 }
 
@@ -175,6 +203,7 @@ async function riskScore(ip, fingerprint){
   }
 }
 
+// ================= VOTE =================
 app.post("/vote", async (req, res) => {
   try {
     const { option_id, poll_id = 1, device_id, captcha } = req.body;
@@ -254,6 +283,7 @@ app.post("/vote", async (req, res) => {
   }
 });
 
+// ================= RESULTS =================
 app.get("/results/:poll_id", async (req, res) => {
   try {
 
