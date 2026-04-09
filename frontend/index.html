@@ -4,8 +4,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Encuesta Perú 2026</title>
 
-<!-- 🔥 IMPORTANTE: defer + onload manual -->
-<script src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit" defer></script>
+<!-- ✅ FIX: quitar render=explicit -->
+<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" defer></script>
 
 <style>
 body{font-family:sans-serif;padding:20px;background:#f5f5f5;}
@@ -47,7 +47,7 @@ let votingInProgress = false;
 let captchaToken = null;
 let captchaRendered = false;
 
-// 🔥 RENDER ROBUSTO
+// 🔥 FIX DEFINITIVO
 function initCaptcha(){
 
   if(captchaRendered) return;
@@ -62,11 +62,9 @@ function initCaptcha(){
           captchaToken = token;
         },
         'expired-callback': function() {
-          console.log("captcha expirado");
           captchaToken = null;
         },
         'error-callback': function() {
-          console.log("captcha error");
           captchaToken = null;
         }
       });
@@ -83,7 +81,7 @@ function initCaptcha(){
   }
 }
 
-// 🔥 iniciar cuando DOM esté listo
+// 🔥 mantener tu lógica intacta
 document.addEventListener("DOMContentLoaded", function(){
   initCaptcha();
 });
