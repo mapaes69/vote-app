@@ -1,77 +1,202 @@
 const express = require("express");
 const cors = require("cors");
-const path = require("path");
-const pool = require("./db");
+const helmet = require("helmet");
 const crypto = require("crypto");
+const path = require("path");
+const fetch = (...args)=>import('node-fetch').then(({default:fetch})=>fetch(...args));
+
+const Redis = require("ioredis");
+const pool = require("./db");
+
+// 🔥 REDIS CORREGIDO
+const redis = new Redis({
+  port: 6380,
+  maxRetriesPerRequest: 3,
+  retryStrategy(times) {
+    return Math.min(times * 50, 2000);
+  }
+});
 
 const app = express();
 
-app.use(cors());
+app.use(helmet({ contentSecurityPolicy: false }));
+app.use(cors({ origin: ["*"] }));
 app.use(express.json());
 
-app.use(express.static(path.join(__dirname, "../frontend")));
+// ================= FRONTEND =================
+const frontendPath = path.join(__dirname, "../frontend");
+app.use(express.static(frontendPath));
 
-// ================= API =================
+app.get("/", (req, res) => {
+  res.sendFile(path.join(frontendPath, "index.html"));
+});
+
+// ================= CONFIG =================
+// 🔥 PEGA TU CLAVE AQUÍ
+const TURNSTILE_SECRET = "0x4AAAAAAC2UKBGuHi7mK-b9PrhVVYTpOG8";
+
+const VALID_OPTIONS = [1,2,3,4,5,6,7,8,9];
+
+// ================= HELPERS =================
+function getIP(req){
+  let ip = (req.headers["x-forwarded-for"] || "").split(",")[0].trim()
+    || req.socket.remoteAddress || "unknown";
+  if(ip.startsWith("::ffff:")) ip = ip.replace("::ffff:", "");
+  return ip;
+}
+
+function hashDevice(device_id, userAgent, ip){
+  return crypto.createHash("sha256")
+    .update(device_id + "|" + userAgent + "|" + ip)
+    .digest("hex");
+}
+
+// ================= CAPTCHA =================
+async function verifyCaptcha(captcha, ip){
+  try{
+    const verify = await fetch(
+      "https://challenges.cloudflare.com/turnstile/v0/siteverify",
+      {
+        method: "POST",
+        headers: {"Content-Type":"application/x-www-form-urlencoded"},
+        body: new URLSearchParams({
+          secret: TURNSTILE_SECRET,
+          response: captcha,
+          remoteip: ip
+        })
+      }
+    );
+
+    const data = await verify.json();
+    return data.success && data.hostname === "encuestaperu2026.com";
+
+  } catch(e){
+    return false;
+  }
+}
+
+// ================= RATE LIMIT =================
+async function rateLimit(ip){
+
+  const key = `rate:${ip}`;
+
+  const pipeline = redis.pipeline();
+  pipeline.incr(key);
+  pipeline.expire(key, 60);
+
+  const res = await pipeline.exec();
+  const count = res[0][1];
+
+  if(count > 25){
+    throw new Error("RATE_LIMIT");
+  }
+}
+
+// ================= BURST =================
+async function globalBurstProtection(){
+  const count = await redis.incr("burst");
+
+  if(count === 1){
+    await redis.expire("burst", 1);
+  }
+
+  if(count > 200){
+    throw new Error("BURST");
+  }
+}
+
+// ================= VOTE =================
 app.post("/vote", async (req, res) => {
   try {
-    const { option_id, poll_id = 1 } = req.body;
+    const { option_id, poll_id = 1, device_id, captcha } = req.body;
 
-    // 🔥 IP REAL
-    let ip = req.headers["x-forwarded-for"] || req.socket.remoteAddress;
-    if (ip.includes(",")) ip = ip.split(",")[0].trim();
+    if (!option_id || !device_id || !captcha) {
+      return res.status(400).json({ error: "Datos inválidos" });
+    }
 
-    // 🔥 USER AGENT
-    const userAgent = req.headers["user-agent"] || "";
+    if(!VALID_OPTIONS.includes(Number(option_id))){
+      return res.status(400).json({ error: "Opción inválida" });
+    }
 
-    // 🔥 FINGERPRINT MEJORADO (CAMBIO SEGURO)
-    const fingerprint = crypto
-      .createHash("sha256")
-      .update(
-        ip +
-        userAgent +
-        (req.headers["sec-ch-ua"] || "") +
-        (req.headers["accept-language"] || "")
-      )
-      .digest("hex");
+    if(typeof device_id !== "string" || device_id.length < 20){
+      return res.status(400).json({ error: "Device inválido" });
+    }
 
-    // 🔥 INSERT CON BLOQUEO DB
-    await pool.query(
-      "INSERT INTO votes (poll_id, option_id, device_id, ip, fingerprint) VALUES ($1,$2,$3,$4,$5)",
-      [poll_id, option_id, userAgent, ip, fingerprint]
-    );
+    const ip = getIP(req);
+    const userAgent = req.headers["user-agent"] || "unknown";
+    const fingerprint = hashDevice(device_id, userAgent, ip);
+
+    await globalBurstProtection();
+    await rateLimit(ip);
+
+    const captchaOk = await verifyCaptcha(captcha, ip);
+    if (!captchaOk) {
+      return res.status(400).json({ error: "Captcha inválido" });
+    }
+
+    const lock = await redis.set(`vote:${fingerprint}`, "1", "NX", "EX", 86400);
+
+    if(!lock){
+      return res.status(403).json({ error: "Ya votaste" });
+    }
+
+    const pipeline = redis.pipeline();
+    pipeline.incr(`counter:${option_id}`);
+    pipeline.exec();
+
+    try{
+      await pool.query(
+        "INSERT INTO votes (poll_id, option_id, ip, fingerprint) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING",
+        [poll_id, option_id, ip, fingerprint]
+      );
+    }catch(e){
+      console.error("DB ERROR:", e.message);
+    }
 
     res.json({ ok: true });
 
   } catch (err) {
-    if (err.code === "23505") {
-      return res.status(400).json({ error: "Ya votaste" });
+
+    if(err.message === "RATE_LIMIT"){
+      return res.status(429).json({ error: "Demasiadas solicitudes" });
     }
-    console.error(err);
+
+    if(err.message === "BURST"){
+      return res.status(503).json({ error: "Alta demanda" });
+    }
+
     res.status(500).json({ error: "Error servidor" });
   }
 });
 
-// 🔥 RESULTADOS REALES
+// ================= RESULTS =================
 app.get("/results/:poll_id", async (req, res) => {
-  const { poll_id } = req.params;
+  try {
 
-  const result = await pool.query(
-    "SELECT option_id, COUNT(*) as votes FROM votes WHERE poll_id = $1 GROUP BY option_id",
-    [poll_id]
-  );
+    const pipeline = redis.pipeline();
 
-  const total = result.rows.reduce((a, b) => a + parseInt(b.votes), 0);
+    VALID_OPTIONS.forEach(id=>{
+      pipeline.get(`counter:${id}`);
+    });
 
-  res.json({
-    results: result.rows,
-    total
-  });
+    const data = await pipeline.exec();
+
+    const results = VALID_OPTIONS.map((id, i)=>{
+      const votes = parseInt(data[i][1] || 0);
+      return { option_id: id, votes };
+    });
+
+    const total = results.reduce((a,b)=>a+b.votes,0);
+
+    res.json({ results, total });
+
+  } catch (err) {
+    res.status(500).json({ error: "Error resultados" });
+  }
 });
 
-app.get("/", (req, res) => {
-  res.sendFile(path.join(__dirname, "../frontend/index.html"));
-});
+const PORT = process.env.PORT || 3001;
 
-app.listen(3001, "0.0.0.0", () => {
-  console.log("🔥 ULTRA PRO SERVER corriendo en http://0.0.0.0:3001");
+app.listen(PORT, () => {
+  console.log("🔥 SERVER LISTO Y FUNCIONANDO");
 });
