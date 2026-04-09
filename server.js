@@ -39,7 +39,7 @@ app.use(cors({
 app.use(express.json());
 
 // ================= FRONTEND SAFE =================
-const frontendPath = path.join(__dirname, "../frontend");
+const frontendPath = path.join(__dirname, "frontend");
 app.use(express.static(frontendPath));
 
 app.get("/", (req, res) => {
