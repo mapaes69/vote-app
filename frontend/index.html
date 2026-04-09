@@ -4,7 +4,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Encuesta Perú 2026</title>
 
-<script src="https://challenges.cloudflare.com/turnstile/v0/api.js"></script>
+<!-- 🔥 IMPORTANTE: defer + onload manual -->
+<script src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit" defer></script>
 
 <style>
 body{font-family:sans-serif;padding:20px;background:#f5f5f5;}
@@ -46,30 +47,46 @@ let votingInProgress = false;
 let captchaToken = null;
 let captchaRendered = false;
 
-// 🔥 FIX REAL TURNSTILE
+// 🔥 RENDER ROBUSTO
 function initCaptcha(){
+
   if(captchaRendered) return;
 
-  if (window.turnstile) {
-    turnstile.render('#turnstile-widget', {
-      sitekey: '0x4AAAAAAC2UKMwDp1G4imaP',
-      callback: function(token) {
-        captchaToken = token;
-      },
-      'expired-callback': function() {
-        captchaToken = null;
-        console.log("⚠️ captcha expirado");
-      }
-    });
+  if (window.turnstile && document.getElementById("turnstile-widget")) {
 
-    captchaRendered = true;
+    try{
+      turnstile.render('#turnstile-widget', {
+        sitekey: '0x4AAAAAAC2UKMwDp1G4imaP',
+        callback: function(token) {
+          console.log("captcha OK");
+          captchaToken = token;
+        },
+        'expired-callback': function() {
+          console.log("captcha expirado");
+          captchaToken = null;
+        },
+        'error-callback': function() {
+          console.log("captcha error");
+          captchaToken = null;
+        }
+      });
+
+      captchaRendered = true;
+
+    }catch(e){
+      console.log("error render captcha", e);
+      setTimeout(initCaptcha, 1000);
+    }
 
   } else {
     setTimeout(initCaptcha, 500);
   }
 }
 
-initCaptcha();
+// 🔥 iniciar cuando DOM esté listo
+document.addEventListener("DOMContentLoaded", function(){
+  initCaptcha();
+});
 
 const candidates = [
 {id:4,name:"Keiko Fujimori",img:"img/Keiko.jpg",parties:["img/keiko (2).webp"]},
