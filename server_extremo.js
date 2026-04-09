@@ -1,3 +1,5 @@
+// 👉 PEGA TODO ESTE BLOQUE
+
 const express = require("express");
 const cors = require("cors");
 const helmet = require("helmet");
@@ -39,7 +41,7 @@ app.get("/", (req, res) => {
 });
 
 const TURNSTILE_SECRET = process.env.TURNSTILE_SECRET;
-const SECRET_SALT = process.env.SECRET_SALT || "fallback_seguro";
+const SECRET_SALT = process.env.SECRET_SALT;
 const IPQS_KEY = process.env.IPQS_KEY;
 
 const VALID_OPTIONS = [1,2,3,4,5,6,7,8,9];
@@ -80,34 +82,16 @@ async function verifyCaptcha(captcha, ip){
   }
 }
 
-// 🔥 CACHE IP CHECK (CRÍTICO)
+// 🔥 VPN / PROXY CHECK
 async function checkIP(ip){
-
   try{
-
-    const cacheKey = `ipcheck:${ip}`;
-    const cached = await redis.get(cacheKey);
-
-    if(cached){
-      return cached === "1";
-    }
-
-    if(!IPQS_KEY){
-      return true;
-    }
-
     const res = await fetch(`https://ipqualityscore.com/api/json/ip/${IPQS_KEY}/${ip}`);
     const data = await res.json();
 
-    let ipOk = true;
+    if(data.proxy || data.vpn || data.tor) return false;
+    if(data.fraud_score > 85) return false;
 
-    if(data.proxy || data.vpn || data.tor) ipOk = false;
-    if(data.fraud_score > 85) ipOk = false;
-
-    await redis.set(cacheKey, ipOk ? "1" : "0", "EX", 300);
-
-    return ipOk;
-
+    return true;
   }catch(e){
     return true;
   }
@@ -119,17 +103,11 @@ async function rateLimit(ip, fingerprint){
   const devKey = `rate_dev:${fingerprint}`;
   const comboKey = `combo:${fingerprint}:${ip}`;
 
-  const pipeline = redis.pipeline();
-
-  pipeline.incr(ipKey);
-  pipeline.incr(devKey);
-  pipeline.incr(comboKey);
-
-  const result = await pipeline.exec();
-
-  const ipCount = result[0][1];
-  const devCount = result[1][1];
-  const combo = result[2][1];
+  const [ipCount, devCount, combo] = await Promise.all([
+    redis.incr(ipKey),
+    redis.incr(devKey),
+    redis.incr(comboKey)
+  ]);
 
   if(ipCount === 1) await redis.expire(ipKey, 60);
   if(devCount === 1) await redis.expire(devKey, 60);
@@ -145,34 +123,26 @@ async function rateLimit(ip, fingerprint){
 }
 
 async function globalBurstProtection(){
-  try{
-    const count = await redis.incr("burst");
+  const count = await redis.incr("burst");
 
-    if(count === 1){
-      await redis.expire("burst", 1);
-    }
+  if(count === 1){
+    await redis.expire("burst", 1);
+  }
 
-    if(count > 200){
-      throw new Error("BURST");
-    }
-  }catch(e){
-    console.error("Redis burst error");
+  if(count > 200){
+    throw new Error("BURST");
   }
 }
 
 async function riskScore(ip, fingerprint){
-  try{
-    const key = `risk:${fingerprint}`;
-    let score = await redis.incr(key);
+  const key = `risk:${fingerprint}`;
+  let score = await redis.incr(key);
 
-    if(score === 1){
-      await redis.expire(key, 3600);
-    }
-
-    return score;
-  }catch(e){
-    return 1;
+  if(score === 1){
+    await redis.expire(key, 3600);
   }
+
+  return score;
 }
 
 app.post("/vote", async (req, res) => {
@@ -201,7 +171,7 @@ app.post("/vote", async (req, res) => {
     }
 
     const risk = await riskScore(ip, fingerprint);
-    if(risk > 20){
+    if(risk > 15){
       return res.status(403).json({ error: "Actividad sospechosa" });
     }
 
@@ -219,10 +189,9 @@ app.post("/vote", async (req, res) => {
       return res.status(403).json({ error: "Ya votaste" });
     }
 
-    try{
-      await redis.incr(`counter:${option_id}`);
-    }catch(e){
-      console.error("Redis counter error");
+    const count = await redis.incr(`counter:${option_id}`);
+    if(!count){
+      throw new Error("REDIS_FAIL");
     }
 
     try{
@@ -282,5 +251,5 @@ app.get("/results/:poll_id", async (req, res) => {
 const PORT = process.env.PORT || 3001;
 
 app.listen(PORT, () => {
-  console.log("🔥 SERVER FINAL 100% LISTO");
+  console.log("🔥 SERVER 100% NIVEL EXTREMO ACTIVO");
 });
