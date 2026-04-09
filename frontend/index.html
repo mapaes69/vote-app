@@ -4,7 +4,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Encuesta Perú 2026</title>
 
-<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" defer></script>
+<script src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit" defer></script>
 
 <style>
 body{font-family:sans-serif;padding:20px;background:#f5f5f5;}
@@ -26,14 +26,7 @@ body{font-family:sans-serif;padding:20px;background:#f5f5f5;}
 <h2>🗳️ Encuesta Nacional Perú 2026</h2>
 <h3 id="total">Cargando...</h3>
 
-<div id="captcha-container">
-  <div class="cf-turnstile" 
-       data-sitekey="0x4AAAAAAC3RCgNGrkg5zYVQ"
-       data-callback="onCaptchaSuccess"
-       data-expired-callback="onCaptchaExpired"
-       data-error-callback="onCaptchaError">
-  </div>
-</div>
+<div id="captcha-container"></div>
 
 <div id="options"></div>
 
@@ -50,21 +43,35 @@ if (!device_id) {
 let votingInProgress = false;
 let captchaToken = null;
 let alreadyVoted = localStorage.getItem("voted") === "true";
+let widgetId = null;
 
-function onCaptchaSuccess(token){ captchaToken = token; }
+function onCaptchaSuccess(token){ 
+  captchaToken = token; 
+  console.log("captcha OK");
+}
 function onCaptchaExpired(){ captchaToken = null; }
 function onCaptchaError(){ captchaToken = null; }
 
-const candidates = [...]; // se mantiene igual
+window.onload = () => {
+  if(window.turnstile){
+    widgetId = turnstile.render("#captcha-container", {
+      sitekey: "0x4AAAAAAC3RCgNGrkg5zYVQ",
+      callback: onCaptchaSuccess,
+      "expired-callback": onCaptchaExpired,
+      "error-callback": onCaptchaError
+    });
+  }
+};
+
+const candidates = [
+  {id:1,name:"Keiko Fujimori",img:"img/keiko.jpg",parties:["img/fuerza.jpg"]},
+  {id:2,name:"Rafael López Aliaga",img:"img/rafael.jpg",parties:["img/renovacion.jpg"]},
+  {id:3,name:"Carlos Álvarez",img:"img/carlos.jpg",parties:["img/partido.jpg"]}
+];
 
 async function loadUI(){
   try{
     const res = await fetch(BACKEND + "/results/1");
-
-    if(!res.ok){
-      throw new Error("backend error");
-    }
-
     const data = await res.json();
 
     document.getElementById("total").innerText="🔥 Total votos: "+data.total;
@@ -87,12 +94,9 @@ async function loadUI(){
 
       div.innerHTML = `
         <div class="row">
-          <img src="${c.img}" class="photo" onerror="this.src='img/default.jpg'">
+          <img src="${c.img}" class="photo">
           <div class="info">
             <div class="name">${c.name}</div>
-            <div class="parties">
-              ${c.parties.map(p=>`<img src="${p}">`).join("")}
-            </div>
           </div>
         </div>
 
@@ -145,7 +149,7 @@ async function loadUI(){
             alreadyVoted = true;
 
             if(window.turnstile){
-              turnstile.reset();
+              turnstile.reset(widgetId);
             }
 
             captchaToken = null;
