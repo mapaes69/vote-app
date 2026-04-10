@@ -14,16 +14,18 @@ let redis;
 
 try {
   redis = new Redis(process.env.REDIS_URL, {
-    maxRetriesPerRequest: 3,
-    enableReadyCheck: true
+    maxRetriesPerRequest: 1,
+    retryStrategy: (times) => Math.min(times * 200, 2000),
+    connectTimeout: 5000,
+    enableReadyCheck: false
   });
 
-  redis.on("error", (err) => {
-    console.error("❌ Redis error:", err.message);
+  redis.on("error", () => {
+    console.log("⚠️ Redis degradado");
   });
 
-} catch (e) {
-  console.error("⚠️ Redis no disponible, modo degradado");
+} catch {
+  console.error("⚠️ Redis no disponible");
 }
 
 if(!process.env.REDIS_URL){
@@ -40,15 +42,14 @@ app.use(helmet({
   crossOriginEmbedderPolicy: false
 }));
 
+app.use(express.json({ limit: "50kb" }));
+
 app.use(cors({
   origin: [
     "https://encuestaperu2026.com",
-    "https://vote-app-hugt.onrender.com",
-    "http://localhost:3001"
+    "https://vote-app-hugt.onrender.com"
   ]
 }));
-
-app.use(express.json());
 
 // ================= FRONTEND =================
 const frontendPath = path.join(__dirname, "frontend");
@@ -60,7 +61,6 @@ app.get("/", (req, res) => {
   if (fs.existsSync(indexPath)) {
     return res.sendFile(indexPath);
   }
-
   return res.send("🔥 Backend activo");
 });
 
@@ -120,11 +120,9 @@ async function verifyCaptcha(captcha, ip){
     }
 
     const data = await verify.json();
-
     return data.success === true;
 
-  }catch(e){
-    console.error("❌ CAPTCHA ERROR:", e.message);
+  }catch{
     return false;
   }
 }
@@ -133,112 +131,125 @@ async function verifyCaptcha(captcha, ip){
 async function safeRedis(fn){
   try{
     if(!redis) return null;
-    return await fn();
-  }catch(e){
-    console.error("⚠️ Redis fallback:", e.message);
+
+    let done = false;
+
+    const result = await Promise.race([
+      fn().then(r=>{
+        done = true;
+        return r;
+      }),
+      new Promise(resolve=>setTimeout(()=>{
+        if(!done) resolve(null);
+      }, 2500))
+    ]);
+
+    return result;
+
+  }catch{
     return null;
   }
 }
 
+// ================= FALLBACK MEMORIA =================
+const memoryRate = new Map();
+
+// ================= DETECCIÓN HUMANA =================
+const voteTiming = new Map();
+
+function detectBot(fingerprint){
+  const now = Date.now();
+
+  if(!voteTiming.has(fingerprint)){
+    voteTiming.set(fingerprint, []);
+  }
+
+  const arr = voteTiming.get(fingerprint).filter(t => now - t < 10000);
+  arr.push(now);
+  voteTiming.set(fingerprint, arr);
+
+  if(arr.length > 2){
+    return true;
+  }
+
+  return false;
+}
+
 // ================= RATE LIMIT =================
 async function rateLimit(ip, fingerprint){
-  return safeRedis(async ()=>{
-    const ipKey = `rate_ip:${ip}`;
-    const devKey = `rate_dev:${fingerprint}`;
-    const comboKey = `combo:${fingerprint}:${ip}`;
-    const blockKey = `block:${fingerprint}`;
+  try {
+    const result = await safeRedis(async ()=>{
+      const ipKey = `rate_ip:${ip}`;
+      const devKey = `rate_dev:${fingerprint}`;
 
-    if(await redis.get(blockKey)){
-      throw new Error("BLOCKED");
+      const ipCount = await redis.incr(ipKey);
+      const devCount = await redis.incr(devKey);
+
+      if(ipCount === 1) await redis.expire(ipKey, 120);
+      if(devCount === 1) await redis.expire(devKey, 300);
+
+      if(ipCount > 15 || devCount > 6){
+        throw new Error("RATE_LIMIT");
+      }
+    });
+
+    if(result === null){
+      const now = Date.now();
+
+      if(!memoryRate.has(ip)){
+        memoryRate.set(ip, []);
+      }
+
+      const arr = memoryRate.get(ip).filter(t => now - t < 60000);
+      arr.push(now);
+      memoryRate.set(ip, arr);
+
+      if(arr.length > 20){
+        throw new Error("RATE_LIMIT");
+      }
+
+      return;
     }
 
-    const pipeline = redis.pipeline();
-    pipeline.incr(ipKey);
-    pipeline.incr(devKey);
-    pipeline.incr(comboKey);
-
-    const result = await pipeline.exec();
-
-    const ipCount = result[0][1];
-    const devCount = result[1][1];
-    const combo = result[2][1];
-
-    if(ipCount === 1) await redis.expire(ipKey, 120);
-    if(devCount === 1) await redis.expire(devKey, 300);
-    if(combo === 1) await redis.expire(comboKey, 120);
-
-    if(ipCount > 15 || devCount > 6){
-      await redis.set(blockKey, "1", "EX", 900);
-      throw new Error("RATE_LIMIT");
-    }
-
-    if(combo > 3){
-      await redis.set(blockKey, "1", "EX", 1800);
-      throw new Error("BOT_DETECTED");
-    }
-  });
+  } catch {
+    throw new Error("RATE_LIMIT");
+  }
 }
 
-// ================= BURST =================
-async function globalBurstProtection(){
-  return safeRedis(async ()=>{
-    const key = "burst";
-    const count = await redis.incr(key);
+// ================= RESULTS =================
+app.get("/results/:poll_id", async (req, res) => {
+  try {
 
-    if(count === 1){
-      await redis.expire(key, 1);
+    let total = 0;
+
+    const data = await safeRedis(async ()=>{
+      const pipeline = redis.pipeline();
+      VALID_OPTIONS.forEach(id=>{
+        pipeline.get(`counter:${id}`);
+      });
+
+      return await Promise.race([
+        pipeline.exec(),
+        new Promise(resolve=>setTimeout(()=>resolve(null), 2500))
+      ]);
+    });
+
+    if(!data){
+      return res.json({ results: [], total: 0 });
     }
 
-    if(count > 120){
-      await redis.set("lock", "1", "EX", 5);
-      throw new Error("BURST");
-    }
+    const results = VALID_OPTIONS.map((id,i)=>{
+      const votes = parseInt(data?.[i]?.[1] || 0);
+      total += votes;
+      return { option_id:id, votes };
+    });
 
-    if(await redis.get("lock")){
-      throw new Error("BURST");
-    }
-  });
-}
+    res.json({ results, total });
 
-// ================= IA =================
-async function behaviorAnalysis(fingerprint){
-  return safeRedis(async ()=>{
-    const now = Date.now();
-    const key = `behavior:${fingerprint}`;
-
-    const last = await redis.get(key);
-    await redis.set(key, now, "EX", 600);
-
-    if(!last) return;
-
-    const diff = now - parseInt(last);
-
-    if(diff < 400){
-      await redis.incr(`bot:${fingerprint}`);
-    }
-
-    if(diff > 400 && diff < 1800){
-      await redis.incr(`pattern:${fingerprint}`);
-    }
-
-    if(diff > 1800){
-      await redis.decr(`pattern:${fingerprint}`);
-    }
-
-    const bot = parseInt(await redis.get(`bot:${fingerprint}`) || 0);
-    const pattern = parseInt(await redis.get(`pattern:${fingerprint}`) || 0);
-
-    if(bot > 4){
-      await redis.set(`block:${fingerprint}`, "1", "EX", 3600);
-      throw new Error("AI_BOT");
-    }
-
-    if(pattern > 8){
-      await redis.set(`block:${fingerprint}`, "1", "EX", 1800);
-      throw new Error("AI_PATTERN");
-    }
-  });
-}
+  } catch {
+    res.json({ results: [], total: 0 });
+  }
+});
 
 // ================= VOTE =================
 app.post("/vote", async (req, res) => {
@@ -250,6 +261,10 @@ app.post("/vote", async (req, res) => {
       return res.status(400).json({ error: "Datos inválidos" });
     }
 
+    if (typeof device_id !== "string" || device_id.length < 20 || device_id.length > 100) {
+      return res.status(400).json({ error: "device_id inválido" });
+    }
+
     if(!VALID_OPTIONS.includes(Number(option_id))){
       return res.status(400).json({ error: "Opción inválida" });
     }
@@ -258,47 +273,55 @@ app.post("/vote", async (req, res) => {
     const ua = req.headers["user-agent"] || "";
     const fingerprint = hashDevice(device_id, ua, ip);
 
-    const captchaOk = await verifyCaptcha(captcha, ip);
-    if (!captchaOk) {
-      return res.status(400).json({ error: "Captcha inválido o expirado" });
+    if(detectBot(fingerprint)){
+      return res.status(429).json({ error: "Actividad sospechosa" });
     }
 
-    await globalBurstProtection();
+    const captchaOk = await verifyCaptcha(captcha, ip);
+    if (!captchaOk) {
+      return res.status(400).json({ error: "Captcha inválido" });
+    }
+
     await rateLimit(ip, fingerprint);
-    await behaviorAnalysis(fingerprint);
 
     const lock = await safeRedis(() =>
       redis.set(`vote:${fingerprint}`, "1", "NX", "EX", 86400)
     );
 
-    if(lock === null){
-      return res.status(503).json({ error: "Sistema ocupado, intenta nuevamente" });
-    }
-
-    if(lock !== "OK"){
+    if(lock !== "OK" && lock !== null){
       return res.status(403).json({ error: "Ya votaste" });
     }
 
     await safeRedis(()=> redis.incr(`counter:${option_id}`));
 
-    await pool.query(
-      "INSERT INTO votes (option_id, ip, fingerprint) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING",
-      [option_id, ip, fingerprint]
-    );
+    try {
+      await Promise.race([
+        pool.query(
+          "INSERT INTO votes (option_id, device_id, ip, fingerprint) VALUES ($1,$2,$3,$4)",
+          [option_id, device_id, ip, fingerprint]
+        ),
+        new Promise((_, reject)=>setTimeout(()=>reject(new Error("DB_TIMEOUT")),3000))
+      ]);
+    } catch (e) {
+
+      if(e.message === "DB_TIMEOUT"){
+        return res.status(500).json({ error: "DB lenta, intenta nuevamente" });
+      }
+
+      return res.status(403).json({ error: "Ya votaste (DB)" });
+    }
 
     res.json({ ok: true });
 
   } catch (err) {
+    if(err.message === "RATE_LIMIT"){
+      return res.status(429).json({ error: "Demasiadas solicitudes" });
+    }
 
-    if(err.message === "RATE_LIMIT") return res.status(429).json({ error: "Demasiadas solicitudes" });
-    if(err.message === "BURST") return res.status(503).json({ error: "Alta demanda" });
-    if(err.message === "BOT_DETECTED") return res.status(403).json({ error: "Bot detectado" });
-
-    console.error("❌ ERROR GENERAL:", err.message);
     res.status(500).json({ error: "Error servidor" });
   }
 });
 
 app.listen(process.env.PORT || 3001, ()=>{
-  console.log("🔥 ULTRA ANTIFRAUDE ACTIVO");
+  console.log("🔥 SERVER PRODUCCIÓN EMPRESA ACTIVO");
 });
