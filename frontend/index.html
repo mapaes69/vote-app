@@ -10,11 +10,9 @@
 body{font-family:sans-serif;padding:20px;background:#f5f5f5;}
 .card{background:white;padding:15px;border-radius:12px;margin:12px 0;box-shadow:0 2px 6px rgba(0,0,0,0.1);}
 .row{display:flex;align-items:center;gap:15px;}
-.photo{width:70px;height:70px;border-radius:50%;}
+.photo{width:70px;height:70px;border-radius:50%;object-fit:cover;}
 .info{flex:1;}
 .name{font-weight:bold;margin-bottom:8px;}
-.parties{display:flex;gap:5px;}
-.parties img{width:40px;height:40px;object-fit:contain;}
 .vote-btn{margin-top:10px;width:100%;padding:10px;border:none;border-radius:8px;background:#007bff;color:white;font-weight:bold;}
 .result-bar{height:8px;background:#ddd;border-radius:5px;overflow:hidden;margin-top:5px;}
 .result-fill{height:100%;background:#007bff;}
@@ -26,13 +24,7 @@ body{font-family:sans-serif;padding:20px;background:#f5f5f5;}
 <h2>🗳️ Encuesta Nacional Perú 2026</h2>
 <h3 id="total">Cargando...</h3>
 
-<!-- 🔥 FIX FINAL -->
-<div class="cf-turnstile" 
-     data-sitekey="0x4AAAAAAC3RCgNGrkg5zYVQ"
-     data-callback="onCaptchaSuccess"
-     data-action="vote">
-</div>
-
+<div id="captcha"></div>
 <div id="options"></div>
 
 <script>
@@ -48,16 +40,48 @@ if (!device_id) {
 let votingInProgress = false;
 let captchaToken = null;
 let alreadyVoted = localStorage.getItem("voted") === "true";
+let captchaWidgetId = null;
 
-function onCaptchaSuccess(token){ 
-  captchaToken = token; 
-  console.log("captcha OK:", token);
+// 🔥 ESPERA TURNSTILE
+function waitForTurnstile(){
+  return new Promise(resolve=>{
+    const check = ()=>{
+      if(window.turnstile){
+        resolve();
+      } else {
+        setTimeout(check, 100);
+      }
+    };
+    check();
+  });
+}
+
+// 🔥 CAPTCHA LIMPIO
+async function renderCaptcha(){
+  captchaToken = null;
+
+  await waitForTurnstile();
+
+  if(captchaWidgetId !== null){
+    try{
+      turnstile.remove(captchaWidgetId);
+    }catch(e){}
+  }
+
+  document.getElementById("captcha").innerHTML = "";
+
+  captchaWidgetId = turnstile.render("#captcha", {
+    sitekey: "0x4AAAAAAC3RCgNGrkg5zYVQ",
+    callback: function(token){
+      captchaToken = token;
+    }
+  });
 }
 
 const candidates = [
-  {id:1,name:"Keiko Fujimori",img:"img/keiko.jpg",parties:["img/fuerza.jpg"]},
-  {id:2,name:"Rafael López Aliaga",img:"img/rafael.jpg",parties:["img/renovacion.jpg"]},
-  {id:3,name:"Carlos Álvarez",img:"img/carlos.jpg",parties:["img/partido.jpg"]}
+  {id:1,name:"Keiko Fujimori",img:"/img/keiko.jpg"},
+  {id:2,name:"Rafael López Aliaga",img:"/img/rafael.jpg"},
+  {id:3,name:"Carlos Álvarez",img:"/img/carlos.jpg"}
 ];
 
 async function loadUI(){
@@ -85,7 +109,7 @@ async function loadUI(){
 
       div.innerHTML = `
         <div class="row">
-          <img src="${c.img}" class="photo">
+          <img src="${c.img}" class="photo" onerror="this.src='/img/default.jpg'">
           <div class="info">
             <div class="name">${c.name}</div>
           </div>
@@ -127,7 +151,6 @@ async function loadUI(){
             headers:{"Content-Type":"application/json"},
             body: JSON.stringify({
               option_id:c.id,
-              poll_id:1,
               device_id,
               captcha:captchaToken
             })
@@ -138,15 +161,18 @@ async function loadUI(){
           if(data.ok){
             localStorage.setItem("voted","true");
             alreadyVoted = true;
+            await renderCaptcha();
             loadUI();
           }else{
             alert(data.error);
             btn.disabled = false;
+            await renderCaptcha();
           }
 
         }catch(e){
           alert("Error conexión backend");
           btn.disabled = false;
+          await renderCaptcha();
         }
 
         votingInProgress=false;
@@ -160,8 +186,18 @@ async function loadUI(){
   }
 }
 
-loadUI();
-setInterval(loadUI,5000);
+// 🚀 INICIO
+(async ()=>{
+  await renderCaptcha();
+  loadUI();
+})();
+
+// 🔥 SOLO ACTUALIZA SI LA PESTAÑA ESTÁ ACTIVA
+setInterval(()=>{
+  if(document.visibilityState === "visible"){
+    loadUI();
+  }
+},10000);
 
 </script>
 
