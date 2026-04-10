@@ -28,9 +28,9 @@ try {
   console.error("⚠️ Redis no disponible");
 }
 
+// 🔥 FIX: no matar el servidor si falta Redis
 if(!process.env.REDIS_URL){
-  console.error("❌ FALTA REDIS_URL");
-  process.exit(1);
+  console.error("⚠️ Redis no configurado (modo degradado)");
 }
 
 const app = express();
@@ -250,27 +250,33 @@ app.post("/vote", async (req, res) => {
     const ua = req.headers["user-agent"] || "";
     const fingerprint = hashDevice(device_id, ua, ip);
 
-    // 🔥 VALIDAR CAPTCHA PRIMERO (FIX CRÍTICO)
     const captchaOk = await verifyCaptcha(captcha, ip);
     if (!captchaOk) {
       return res.status(400).json({ error: "Captcha inválido" });
     }
 
-    // 🔥 BLOQUEO ANTIDUPLICADO
     const lock = await safeRedis(() =>
       redis.set(`vote:${fingerprint}`, "1", "NX", "EX", 86400)
     );
 
-    if(lock !== "OK"){
+    // 🔥 FIX APLICADO
+    if(lock !== "OK" && lock !== null){
       return res.status(403).json({ error: "Ya votaste" });
     }
 
     await safeRedis(()=> redis.incr(`counter:${option_id}`));
 
-    await pool.query(
-      "INSERT INTO votes (option_id, device_id, ip, fingerprint) VALUES ($1,$2,$3,$4)",
-      [option_id, device_id, ip, fingerprint]
-    );
+    try {
+      await pool.query(
+        "INSERT INTO votes (option_id, device_id, ip, fingerprint) VALUES ($1,$2,$3,$4)",
+        [option_id, device_id, ip, fingerprint]
+      );
+    } catch (err) {
+      if(err.code === "23505"){
+        return res.status(403).json({ error: "Ya votaste" });
+      }
+      throw err;
+    }
 
     res.json({ ok: true });
 
