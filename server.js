@@ -83,6 +83,7 @@ function hashDevice(device_id, userAgent, ip){
     .digest("hex");
 }
 
+// 🔥 FIX REAL CAPTCHA
 async function verifyCaptcha(captcha, ip){
   try{
     if(typeof captcha !== "string" || captcha.length < 10){
@@ -103,9 +104,23 @@ async function verifyCaptcha(captcha, ip){
     );
 
     const data = await verify.json();
-    return data.success;
 
-  }catch{
+    console.log("🔍 CAPTCHA RESPONSE:", data);
+
+    if (!data.success) return false;
+
+    if (data["error-codes"] && data["error-codes"].length > 0){
+      return false;
+    }
+
+    if (data.action && data.action !== "vote"){
+      return false;
+    }
+
+    return true;
+
+  }catch(e){
+    console.error("❌ CAPTCHA ERROR:", e);
     return false;
   }
 }

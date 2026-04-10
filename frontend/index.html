@@ -4,7 +4,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Encuesta Perú 2026</title>
 
-<script src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit" defer></script>
+<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
 
 <style>
 body{font-family:sans-serif;padding:20px;background:#f5f5f5;}
@@ -26,7 +26,12 @@ body{font-family:sans-serif;padding:20px;background:#f5f5f5;}
 <h2>🗳️ Encuesta Nacional Perú 2026</h2>
 <h3 id="total">Cargando...</h3>
 
-<div id="captcha-container"></div>
+<!-- 🔥 FIX FINAL -->
+<div class="cf-turnstile" 
+     data-sitekey="0x4AAAAAAC3RCgNGrkg5zYVQ"
+     data-callback="onCaptchaSuccess"
+     data-action="vote">
+</div>
 
 <div id="options"></div>
 
@@ -43,31 +48,11 @@ if (!device_id) {
 let votingInProgress = false;
 let captchaToken = null;
 let alreadyVoted = localStorage.getItem("voted") === "true";
-let widgetId = null;
 
 function onCaptchaSuccess(token){ 
   captchaToken = token; 
-  console.log("captcha OK");
+  console.log("captcha OK:", token);
 }
-function onCaptchaExpired(){ captchaToken = null; }
-function onCaptchaError(){ captchaToken = null; }
-
-// 🔥 FIX REAL (espera a que cargue turnstile correctamente)
-function initCaptcha(){
-  if(!window.turnstile){
-    setTimeout(initCaptcha, 200);
-    return;
-  }
-
-  widgetId = turnstile.render("#captcha-container", {
-    sitekey: "0x4AAAAAAC3RCgNGrkg5zYVQ",
-    callback: onCaptchaSuccess,
-    "expired-callback": onCaptchaExpired,
-    "error-callback": onCaptchaError
-  });
-}
-
-initCaptcha();
 
 const candidates = [
   {id:1,name:"Keiko Fujimori",img:"img/keiko.jpg",parties:["img/fuerza.jpg"]},
@@ -153,14 +138,7 @@ async function loadUI(){
           if(data.ok){
             localStorage.setItem("voted","true");
             alreadyVoted = true;
-
-            if(window.turnstile){
-              turnstile.reset(widgetId);
-            }
-
-            captchaToken = null;
             loadUI();
-
           }else{
             alert(data.error);
             btn.disabled = false;
