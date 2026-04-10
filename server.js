@@ -77,7 +77,6 @@ function getIP(req){
   return ip;
 }
 
-// 🔥 fingerprint reforzado
 function hashDevice(device_id, userAgent, ip){
   return crypto.createHash("sha256")
     .update(device_id + "|" + userAgent + "|" + ip + "|" + SECRET_SALT)
@@ -86,7 +85,7 @@ function hashDevice(device_id, userAgent, ip){
 
 async function verifyCaptcha(captcha, ip){
   try{
-    if(typeof captcha !== "string" || captcha.length < 20){
+    if(typeof captcha !== "string" || captcha.length < 10){
       return false;
     }
 
@@ -111,7 +110,7 @@ async function verifyCaptcha(captcha, ip){
   }
 }
 
-// ================= RATE LIMIT ULTRA =================
+// ================= RATE LIMIT =================
 async function rateLimit(ip, fingerprint){
 
   const ipKey = `rate_ip:${ip}`;
@@ -169,7 +168,7 @@ async function globalBurstProtection(){
   }
 }
 
-// ================= IA COMPORTAMIENTO =================
+// ================= IA =================
 async function behaviorAnalysis(fingerprint){
 
   const now = Date.now();
@@ -182,7 +181,6 @@ async function behaviorAnalysis(fingerprint){
 
   const diff = now - parseInt(last);
 
-  // 🔥 modelo más realista
   if(diff < 400){
     await redis.incr(`bot:${fingerprint}`);
   }
@@ -245,7 +243,13 @@ app.post("/vote", async (req, res) => {
     const ua = req.headers["user-agent"] || "";
     const fingerprint = hashDevice(device_id, ua, ip);
 
-    // 🔥 LOCK ATÓMICO (ANTI DOBLE VOTO REAL)
+    // 🔐 CAPTCHA PRIMERO
+    const captchaOk = await verifyCaptcha(captcha, ip);
+    if (!captchaOk) {
+      return res.status(400).json({ error: "Captcha inválido" });
+    }
+
+    // 🔒 LOCK
     const lock = await redis.set(`vote:${fingerprint}`, "1", "NX", "EX", 86400);
     if(!lock){
       return res.status(403).json({ error: "Ya votaste" });
@@ -255,12 +259,6 @@ app.post("/vote", async (req, res) => {
     await rateLimit(ip, fingerprint);
     await behaviorAnalysis(fingerprint);
     await riskScore(fingerprint);
-
-    const captchaOk = await verifyCaptcha(captcha, ip);
-    if (!captchaOk) {
-      await redis.del(`vote:${fingerprint}`);
-      return res.status(400).json({ error: "Captcha inválido" });
-    }
 
     await redis.incr(`counter:${option_id}`);
 
