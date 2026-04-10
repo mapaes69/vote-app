@@ -169,6 +169,22 @@ async function safeRedis(fn){
   }
 }
 
+// ================= RATE LIMIT =================
+async function rateLimitIP(ip){
+  const key = `ratelimit:${ip}`;
+  const count = await safeRedis(()=> redis.incr(key));
+
+  if(count === 1){
+    await safeRedis(()=> redis.expire(key, 60));
+  }
+
+  if(count && count > 10){
+    return false;
+  }
+
+  return true;
+}
+
 // ================= RESULTS =================
 app.get("/results/:poll_id", async (req, res) => {
   try {
@@ -246,6 +262,13 @@ app.post("/vote", async (req, res) => {
     }
 
     const ip = getIP(req);
+
+    // 🔒 RATE LIMIT
+    const allowed = await rateLimitIP(ip);
+    if(!allowed){
+      return res.status(429).json({ error: "Demasiadas solicitudes" });
+    }
+
     const ua = req.headers["user-agent"] || "";
     const fingerprint = hashDevice(device_id, ua, ip);
 
@@ -276,8 +299,7 @@ app.post("/vote", async (req, res) => {
 
       console.error("❌ DB ERROR:", err.message);
 
-      // 🔥 FIX CRÍTICO
-      return res.status(200).json({ ok: true });
+      return res.status(500).json({ error: "Error guardando voto" });
     }
 
     res.json({ ok: true });
