@@ -13,6 +13,8 @@ body{font-family:sans-serif;padding:20px;background:#f5f5f5;}
 .photo{width:70px;height:70px;border-radius:50%;object-fit:cover;}
 .info{flex:1;}
 .name{font-weight:bold;margin-bottom:8px;}
+.parties{display:flex;gap:5px;}
+.parties img{width:40px;height:40px;object-fit:contain;}
 .vote-btn{margin-top:10px;width:100%;padding:10px;border:none;border-radius:8px;background:#007bff;color:white;font-weight:bold;}
 .result-bar{height:8px;background:#ddd;border-radius:5px;overflow:hidden;margin-top:5px;}
 .result-fill{height:100%;background:#007bff;}
@@ -24,77 +26,88 @@ body{font-family:sans-serif;padding:20px;background:#f5f5f5;}
 <h2>🗳️ Encuesta Nacional Perú 2026</h2>
 <h3 id="total">Cargando...</h3>
 
-<div id="captcha"></div>
+<div id="captcha-container">
+  <div class="cf-turnstile"
+       data-sitekey="0x4AAAAAAC3RCgNGrkg5zYVQ"
+       data-callback="onCaptchaSuccess"
+       data-expired-callback="onCaptchaExpired">
+  </div>
+</div>
+
 <div id="options"></div>
 
 <script>
 
-const BACKEND = window.location.origin;
+const BACKEND = "https://encuestaperu2026.com";
 
+// 🔥 DEVICE ID ROBUSTO
 let device_id = localStorage.getItem("device_id");
 if (!device_id) {
-  device_id = crypto.randomUUID();
+  try{
+    device_id = crypto.randomUUID();
+  }catch(e){
+    device_id = "dev-" + Date.now() + "-" + Math.random().toString(36).substring(2);
+  }
   localStorage.setItem("device_id", device_id);
 }
 
 let votingInProgress = false;
 let captchaToken = null;
-let alreadyVoted = localStorage.getItem("voted") === "true";
-let captchaWidgetId = null;
+let loadingUI = false; // 🔥 NUEVO CONTROL
 
-// 🔥 ESPERA TURNSTILE
-function waitForTurnstile(){
-  return new Promise(resolve=>{
-    const check = ()=>{
-      if(window.turnstile){
-        resolve();
-      } else {
-        setTimeout(check, 100);
-      }
-    };
-    check();
-  });
+function onCaptchaSuccess(token){
+  captchaToken = token;
 }
 
-// 🔥 CAPTCHA LIMPIO
-async function renderCaptcha(){
+function onCaptchaExpired(){
   captchaToken = null;
-
-  await waitForTurnstile();
-
-  if(captchaWidgetId !== null){
-    try{
-      turnstile.remove(captchaWidgetId);
-    }catch(e){}
-  }
-
-  document.getElementById("captcha").innerHTML = "";
-
-  captchaWidgetId = turnstile.render("#captcha", {
-    sitekey: "0x4AAAAAAC3RCgNGrkg5zYVQ",
-    callback: function(token){
-      captchaToken = token;
-    }
-  });
 }
 
 const candidates = [
-  {id:1,name:"Keiko Fujimori",img:"/img/keiko.jpg"},
-  {id:2,name:"Rafael López Aliaga",img:"/img/rafael.jpg"},
-  {id:3,name:"Carlos Álvarez",img:"/img/carlos.jpg"}
+{id:4,name:"Keiko Fujimori",img:"img/Keiko.jpg",parties:["img/keiko (2).webp"]},
+{id:1,name:"Rafael López Aliaga",img:"img/aliaga.jpg",parties:["img/renovacion popular aliaga.webp"]},
+{id:2,name:"Carlos Álvarez",img:"img/alvarez.jpg",parties:["img/alvarez pais para todos.webp"]},
+{id:3,name:"Ricardo Belmont",img:"img/belmont.jpg",parties:["img/obras belmont.webp"]},
+{id:5,name:"Alfonso López Chau",img:"img/lopez.jpg",parties:["img/nacion lopez.webp"]},
+{id:6,name:"Jorge Nieto",img:"img/nieto.jpg",parties:["img/buen gobierno nieto.webp"]},
+{id:7,name:"Roberto Sanchez",img:"img/sanchez.jpg",parties:["img/juntos por el peru sanchez.webp"]},
+{id:8,name:"Maria Perez Tello",img:"img/tello.jpg",parties:["img/primero la gente tello.webp"]},
+{id:9,name:"Enrique Valderrama",img:"img/valderrama.jpg",parties:["img/apra valderrama.webp"]}
 ];
 
-async function loadUI(){
+async function fetchWithTimeout(url, options={}, timeout=8000){
+  const controller = new AbortController();
+  const id = setTimeout(()=>controller.abort(), timeout);
   try{
-    const res = await fetch(BACKEND + "/results/1");
-    const data = await res.json();
+    const res = await fetch(url,{...options, signal:controller.signal});
+    clearTimeout(id);
+    return res;
+  }catch(e){
+    clearTimeout(id);
+    throw e;
+  }
+}
 
-    document.getElementById("total").innerText="🔥 Total votos: "+data.total;
+async function loadUI(){
+  if(loadingUI) return; // 🔥 BLOQUEO REAL
+  loadingUI = true;
+
+  try{
+    const res = await fetchWithTimeout(BACKEND + "/results/1");
+
+    if(!res.ok){
+      throw new Error("HTTP error");
+    }
+
+    const data = await res.json();
+    const total = parseInt(data.total) || 0;
+
+    document.getElementById("total").innerText="🔥 Total votos: "+total;
 
     const enriched = candidates.map(c=>{
-      const found = data.results?.find(r => r.option_id == c.id);
-      const votes = found ? parseInt(found.votes) : 0;
-      const percent = data.total > 0 ? ((votes/data.total)*100) : 0;
+      const found = data.results?.find(r => Number(r.option_id) === Number(c.id));
+      const votes = found ? (parseInt(found.votes) || 0) : 0;
+      const percent = total > 0 ? ((votes/total)*100) : 0;
       return {...c, votes, percent};
     });
 
@@ -109,15 +122,16 @@ async function loadUI(){
 
       div.innerHTML = `
         <div class="row">
-          <img src="${c.img}" class="photo" onerror="this.src='/img/default.jpg'">
+          <img src="${c.img}" class="photo" onerror="this.onerror=null;this.src='img/default.jpg'">
           <div class="info">
             <div class="name">${c.name}</div>
+            <div class="parties">
+              ${c.parties.map(p=>`<img src="${p}" onerror="this.style.display='none'">`).join("")}
+            </div>
           </div>
         </div>
 
-        <button class="vote-btn" ${alreadyVoted ? "disabled style='background:#999'" : ""}>
-          ${alreadyVoted ? "Ya votaste" : "Votar"}
-        </button>
+        <button class="vote-btn">Votar</button>
 
         <div style="margin-top:10px;">
           <div style="font-size:12px;">${c.votes} votos (${c.percent.toFixed(1)}%)</div>
@@ -131,48 +145,52 @@ async function loadUI(){
 
       btn.onclick=async ()=>{
         if(votingInProgress) return;
-
-        if(alreadyVoted){
-          alert("Ya votaste.");
-          return;
-        }
+        votingInProgress = true;
 
         if(!captchaToken){
-          alert("Completa el captcha primero");
+          alert("Completa el captcha");
+          votingInProgress = false;
           return;
         }
 
-        votingInProgress = true;
         btn.disabled = true;
 
         try{
-          const res = await fetch(BACKEND + "/vote", {
+          const res = await fetchWithTimeout(BACKEND + "/vote", {
             method:"POST",
             headers:{"Content-Type":"application/json"},
             body: JSON.stringify({
               option_id:c.id,
+              poll_id:1,
               device_id,
               captcha:captchaToken
             })
           });
 
+          if(!res.ok){
+            throw new Error("HTTP error");
+          }
+
           const data = await res.json();
 
           if(data.ok){
-            localStorage.setItem("voted","true");
-            alreadyVoted = true;
-            await renderCaptcha();
+            try{
+              if(window.turnstile && turnstile.reset){
+                turnstile.reset();
+              }
+            }catch(e){}
+
+            captchaToken = null;
             loadUI();
+
           }else{
-            alert(data.error);
+            alert(data.error || "Error voto");
             btn.disabled = false;
-            await renderCaptcha();
           }
 
         }catch(e){
           alert("Error conexión backend");
           btn.disabled = false;
-          await renderCaptcha();
         }
 
         votingInProgress=false;
@@ -184,20 +202,17 @@ async function loadUI(){
   }catch(e){
     document.getElementById("total").innerText="❌ Error conectando";
   }
+
+  loadingUI = false;
 }
 
-// 🚀 INICIO
-(async ()=>{
-  await renderCaptcha();
-  loadUI();
-})();
+loadUI();
 
-// 🔥 SOLO ACTUALIZA SI LA PESTAÑA ESTÁ ACTIVA
 setInterval(()=>{
   if(document.visibilityState === "visible"){
     loadUI();
   }
-},10000);
+},8000);
 
 </script>
 

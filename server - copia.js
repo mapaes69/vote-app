@@ -53,8 +53,6 @@ app.use(cors({
 
 // ================= FRONTEND =================
 const frontendPath = path.join(__dirname, "frontend");
-
-app.use('/img', express.static(path.join(__dirname, "frontend", "img")));
 app.use(express.static(frontendPath));
 
 app.get("/", (req, res) => {
@@ -64,23 +62,6 @@ app.get("/", (req, res) => {
     return res.sendFile(indexPath);
   }
   return res.send("🔥 Backend activo");
-});
-
-// ================= CANDIDATOS =================
-const candidatos = [
-  { id: 4, nombre: "Keiko Fujimori", img: "/img/Keiko.jpg", simbolo: "/img/keiko.webp" },
-  { id: 1, nombre: "Rafael López Aliaga", img: "/img/aliaga.jpg", simbolo: "/img/aliaga.webp" },
-  { id: 2, nombre: "Carlos Álvarez", img: "/img/alvarez.jpg", simbolo: "/img/alvarez.webp" },
-  { id: 3, nombre: "Ricardo Belmont", img: "/img/belmont.jpg", simbolo: "/img/belmont.webp" },
-  { id: 5, nombre: "Alfonso López Chau", img: "/img/lopez.jpg", simbolo: "/img/lopez.webp" },
-  { id: 6, nombre: "Jorge Nieto", img: "/img/nieto.jpg", simbolo: "/img/nieto.webp" },
-  { id: 7, nombre: "Roberto Sanchez", img: "/img/sanchez.jpg", simbolo: "/img/sanchez.webp" },
-  { id: 8, nombre: "Maria Perez Tello", img: "/img/tello.jpg", simbolo: "/img/tello.webp" },
-  { id: 9, nombre: "Enrique Valderrama", img: "/img/valderrama.jpg", simbolo: "/img/valderrama.webp" }
-];
-
-app.get("/candidatos", (req, res) => {
-  res.json(candidatos);
 });
 
 // ================= CONFIG =================
@@ -170,6 +151,71 @@ async function safeRedis(fn){
   }
 }
 
+// ================= FALLBACK MEMORIA =================
+const memoryRate = new Map();
+
+// ================= DETECCIÓN HUMANA =================
+const voteTiming = new Map();
+
+function detectBot(fingerprint){
+  const now = Date.now();
+
+  if(!voteTiming.has(fingerprint)){
+    voteTiming.set(fingerprint, []);
+  }
+
+  const arr = voteTiming.get(fingerprint).filter(t => now - t < 10000);
+  arr.push(now);
+  voteTiming.set(fingerprint, arr);
+
+  if(arr.length > 2){
+    return true;
+  }
+
+  return false;
+}
+
+// ================= RATE LIMIT =================
+async function rateLimit(ip, fingerprint){
+  try {
+    const result = await safeRedis(async ()=>{
+      const ipKey = `rate_ip:${ip}`;
+      const devKey = `rate_dev:${fingerprint}`;
+
+      const ipCount = await redis.incr(ipKey);
+      const devCount = await redis.incr(devKey);
+
+      if(ipCount === 1) await redis.expire(ipKey, 120);
+      if(devCount === 1) await redis.expire(devKey, 300);
+
+      if(ipCount > 15 || devCount > 6){
+        throw new Error("RATE_LIMIT");
+      }
+    });
+
+    if(result === null){
+      const now = Date.now();
+
+      if(!memoryRate.has(ip)){
+        memoryRate.set(ip, []);
+      }
+
+      const arr = memoryRate.get(ip).filter(t => now - t < 60000);
+      arr.push(now);
+      memoryRate.set(ip, arr);
+
+      if(arr.length > 20){
+        throw new Error("RATE_LIMIT");
+      }
+
+      return;
+    }
+
+  } catch {
+    throw new Error("RATE_LIMIT");
+  }
+}
+
 // ================= RESULTS =================
 app.get("/results/:poll_id", async (req, res) => {
   try {
@@ -189,30 +235,7 @@ app.get("/results/:poll_id", async (req, res) => {
     });
 
     if(!data){
-      try{
-        const dbRes = await Promise.race([
-          pool.query(`
-            SELECT option_id, COUNT(*) as votes
-            FROM votes
-            GROUP BY option_id
-          `),
-          new Promise((_, reject)=>setTimeout(()=>reject(new Error("DB_TIMEOUT")),3000))
-        ]);
-
-        let total = 0;
-
-        const results = VALID_OPTIONS.map(id=>{
-          const found = dbRes.rows.find(r => Number(r.option_id) === Number(id));
-          const votes = found ? parseInt(found.votes) : 0;
-          total += votes;
-          return { option_id:id, votes };
-        });
-
-        return res.json({ results, total });
-
-      }catch{
-        return res.json({ results: [], total: 0 });
-      }
+      return res.json({ results: [], total: 0 });
     }
 
     const results = VALID_OPTIONS.map((id,i)=>{
@@ -250,31 +273,51 @@ app.post("/vote", async (req, res) => {
     const ua = req.headers["user-agent"] || "";
     const fingerprint = hashDevice(device_id, ua, ip);
 
-    // 🔥 VALIDAR CAPTCHA PRIMERO (FIX CRÍTICO)
+    if(detectBot(fingerprint)){
+      return res.status(429).json({ error: "Actividad sospechosa" });
+    }
+
     const captchaOk = await verifyCaptcha(captcha, ip);
     if (!captchaOk) {
       return res.status(400).json({ error: "Captcha inválido" });
     }
 
-    // 🔥 BLOQUEO ANTIDUPLICADO
+    await rateLimit(ip, fingerprint);
+
     const lock = await safeRedis(() =>
       redis.set(`vote:${fingerprint}`, "1", "NX", "EX", 86400)
     );
 
-    if(lock !== "OK"){
+    if(lock !== "OK" && lock !== null){
       return res.status(403).json({ error: "Ya votaste" });
     }
 
     await safeRedis(()=> redis.incr(`counter:${option_id}`));
 
-    await pool.query(
-      "INSERT INTO votes (option_id, device_id, ip, fingerprint) VALUES ($1,$2,$3,$4)",
-      [option_id, device_id, ip, fingerprint]
-    );
+    try {
+      await Promise.race([
+        pool.query(
+          "INSERT INTO votes (option_id, device_id, ip, fingerprint) VALUES ($1,$2,$3,$4)",
+          [option_id, device_id, ip, fingerprint]
+        ),
+        new Promise((_, reject)=>setTimeout(()=>reject(new Error("DB_TIMEOUT")),3000))
+      ]);
+    } catch (e) {
+
+      if(e.message === "DB_TIMEOUT"){
+        return res.status(500).json({ error: "DB lenta, intenta nuevamente" });
+      }
+
+      return res.status(403).json({ error: "Ya votaste (DB)" });
+    }
 
     res.json({ ok: true });
 
-  } catch {
+  } catch (err) {
+    if(err.message === "RATE_LIMIT"){
+      return res.status(429).json({ error: "Demasiadas solicitudes" });
+    }
+
     res.status(500).json({ error: "Error servidor" });
   }
 });
