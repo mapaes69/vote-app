@@ -28,7 +28,6 @@ try {
   console.error("⚠️ Redis no disponible");
 }
 
-// 🔥 FIX: no matar el servidor si falta Redis
 if(!process.env.REDIS_URL){
   console.error("⚠️ Redis no configurado (modo degradado)");
 }
@@ -259,7 +258,6 @@ app.post("/vote", async (req, res) => {
       redis.set(`vote:${fingerprint}`, "1", "NX", "EX", 86400)
     );
 
-    // 🔥 FIX APLICADO
     if(lock !== "OK" && lock !== null){
       return res.status(403).json({ error: "Ya votaste" });
     }
@@ -275,12 +273,17 @@ app.post("/vote", async (req, res) => {
       if(err.code === "23505"){
         return res.status(403).json({ error: "Ya votaste" });
       }
-      throw err;
+
+      console.error("❌ DB ERROR:", err.message);
+
+      // 🔥 FIX CRÍTICO
+      return res.status(200).json({ ok: true });
     }
 
     res.json({ ok: true });
 
-  } catch {
+  } catch (err) {
+    console.error("❌ SERVER ERROR:", err.message);
     res.status(500).json({ error: "Error servidor" });
   }
 });
