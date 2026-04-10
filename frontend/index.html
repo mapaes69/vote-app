@@ -52,16 +52,22 @@ function onCaptchaSuccess(token){
 function onCaptchaExpired(){ captchaToken = null; }
 function onCaptchaError(){ captchaToken = null; }
 
-window.onload = () => {
-  if(window.turnstile){
-    widgetId = turnstile.render("#captcha-container", {
-      sitekey: "0x4AAAAAAC3RCgNGrkg5zYVQ",
-      callback: onCaptchaSuccess,
-      "expired-callback": onCaptchaExpired,
-      "error-callback": onCaptchaError
-    });
+// 🔥 FIX REAL (espera a que cargue turnstile correctamente)
+function initCaptcha(){
+  if(!window.turnstile){
+    setTimeout(initCaptcha, 200);
+    return;
   }
-};
+
+  widgetId = turnstile.render("#captcha-container", {
+    sitekey: "0x4AAAAAAC3RCgNGrkg5zYVQ",
+    callback: onCaptchaSuccess,
+    "expired-callback": onCaptchaExpired,
+    "error-callback": onCaptchaError
+  });
+}
+
+initCaptcha();
 
 const candidates = [
   {id:1,name:"Keiko Fujimori",img:"img/keiko.jpg",parties:["img/fuerza.jpg"]},
