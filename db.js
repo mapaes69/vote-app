@@ -13,7 +13,7 @@ if (connectionString) {
     ssl: {
       rejectUnauthorized: false,
     },
-    max: 10,
+    max: 20, // 🔥 MEJORADO PARA ALTA CARGA
     idleTimeoutMillis: 30000,
     connectionTimeoutMillis: 5000,
   });
@@ -30,7 +30,7 @@ if (connectionString) {
   });
 }
 
-// 🔥 TEST DE CONEXIÓN (CRÍTICO)
+// 🔥 TEST DE CONEXIÓN (puedes dejarlo si quieres debug)
 pool.connect()
   .then(client => {
     console.log("✅ PostgreSQL conectado");

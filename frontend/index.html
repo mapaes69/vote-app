@@ -38,9 +38,8 @@ body{font-family:sans-serif;padding:20px;background:#f5f5f5;}
 
 <script>
 
-const BACKEND = "https://encuestaperu2026.com";
+const BACKEND = ""; // 🔥 FIX CRÍTICO
 
-// 🔥 DEVICE ID ROBUSTO
 let device_id = localStorage.getItem("device_id");
 if (!device_id) {
   try{
@@ -53,7 +52,7 @@ if (!device_id) {
 
 let votingInProgress = false;
 let captchaToken = null;
-let loadingUI = false; // 🔥 NUEVO CONTROL
+let loadingUI = false;
 
 function onCaptchaSuccess(token){
   captchaToken = token;
@@ -89,7 +88,7 @@ async function fetchWithTimeout(url, options={}, timeout=8000){
 }
 
 async function loadUI(){
-  if(loadingUI) return; // 🔥 BLOQUEO REAL
+  if(loadingUI) return;
   loadingUI = true;
 
   try{
