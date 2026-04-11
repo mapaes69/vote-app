@@ -38,7 +38,7 @@ body{font-family:sans-serif;padding:20px;background:#f5f5f5;}
 
 <script>
 
-const BACKEND = "https://vote-app-hugt.onrender.com"; // 🔥 FIX REAL
+const BACKEND = "https://vote-app-hugt.onrender.com";
 
 let device_id = localStorage.getItem("device_id");
 if (!device_id) {
@@ -93,14 +93,9 @@ async function loadUI(){
 
   try{
     const res = await fetchWithTimeout(BACKEND + "/results/1");
-
-    if(!res.ok){
-      throw new Error("HTTP error");
-    }
-
     const data = await res.json();
-    const total = parseInt(data.total) || 0;
 
+    const total = parseInt(data.total) || 0;
     document.getElementById("total").innerText="🔥 Total votos: "+total;
 
     const enriched = candidates.map(c=>{
@@ -160,17 +155,19 @@ async function loadUI(){
             headers:{"Content-Type":"application/json"},
             body: JSON.stringify({
               option_id:c.id,
-              poll_id:1,
               device_id,
               captcha:captchaToken
             })
           });
 
-          if(!res.ok){
-            throw new Error("HTTP error");
-          }
-
           const data = await res.json();
+
+          if(!res.ok){
+            alert(data.error || "Error voto");
+            btn.disabled = false;
+            votingInProgress = false;
+            return;
+          }
 
           if(data.ok){
             try{
@@ -181,10 +178,6 @@ async function loadUI(){
 
             captchaToken = null;
             loadUI();
-
-          }else{
-            alert(data.error || "Error voto");
-            btn.disabled = false;
           }
 
         }catch(e){
