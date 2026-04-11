@@ -205,16 +205,11 @@ app.get("/results/:poll_id", async (req, res) => {
 
     if(!data){
       try{
-        const dbRes = await Promise.race([
-          pool.query(`
-            SELECT option_id, COUNT(*) as votes
-            FROM votes
-            GROUP BY option_id
-          `),
-          new Promise((_, reject)=>setTimeout(()=>reject(new Error("DB_TIMEOUT")),3000))
-        ]);
-
-        let total = 0;
+        const dbRes = await pool.query(`
+          SELECT option_id, COUNT(*) as votes
+          FROM votes
+          GROUP BY option_id
+        `);
 
         const results = VALID_OPTIONS.map(id=>{
           const found = dbRes.rows.find(r => Number(r.option_id) === Number(id));
@@ -263,7 +258,6 @@ app.post("/vote", async (req, res) => {
 
     const ip = getIP(req);
 
-    // 🔒 RATE LIMIT
     const allowed = await rateLimitIP(ip);
     if(!allowed){
       return res.status(429).json({ error: "Demasiadas solicitudes" });
@@ -281,28 +275,27 @@ app.post("/vote", async (req, res) => {
       redis.set(`vote:${fingerprint}`, "1", "NX", "EX", 86400)
     );
 
-    if(lock !== "OK" && lock !== null){
-      return res.status(403).json({ error: "Ya votaste" });
-    }
+    if(lock === "OK" || lock === null){
+      try {
+        await pool.query(
+          "INSERT INTO votes (option_id, device_id, ip, fingerprint) VALUES ($1,$2,$3,$4)",
+          [option_id, device_id, ip, fingerprint]
+        );
+      } catch (err) {
+        if(err.code === "23505"){
+          return res.status(403).json({ error: "Ya votaste" });
+        }
 
-    await safeRedis(()=> redis.incr(`counter:${option_id}`));
-
-    try {
-      await pool.query(
-        "INSERT INTO votes (option_id, device_id, ip, fingerprint) VALUES ($1,$2,$3,$4)",
-        [option_id, device_id, ip, fingerprint]
-      );
-    } catch (err) {
-      if(err.code === "23505"){
-        return res.status(403).json({ error: "Ya votaste" });
+        console.error("❌ DB ERROR:", err.message);
+        return res.status(500).json({ error: "Error guardando voto" });
       }
 
-      console.error("❌ DB ERROR:", err.message);
+      await safeRedis(()=> redis.incr(`counter:${option_id}`));
 
-      return res.status(500).json({ error: "Error guardando voto" });
+      return res.json({ ok: true });
     }
 
-    res.json({ ok: true });
+    return res.status(403).json({ error: "Ya votaste" });
 
   } catch (err) {
     console.error("❌ SERVER ERROR:", err.message);
